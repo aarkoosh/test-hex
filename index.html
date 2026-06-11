@@ -1,1 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fantasy Hex Strategy v4 - Enchanted Edition</title>
+<style>
+body{margin:0;overflow:hidden;background:#090d16;font-family:system-ui, -apple-system, sans-serif}
+#ui{
+position:absolute;left:16px;top:16px;width:380px;
+background:rgba(11,19,32,0.88);color:#f0f4f8;padding:18px;border-radius:14px;
+box-shadow: 0 8px 32px rgba(0,0,0,0.5);border: 1px solid rgba(255,255,255,0.08);
+pointer-events: none;
+}
+#ui * { pointer-events: auto; }
+h3 { margin: 0 0 10px 0; color: #55aaff; font-size: 20px; letter-spacing: 0.5px; }
+.stat-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; }
+.stat-val { font-weight: bold; color: #fff; }
+#log{height:160px;overflow:auto;font-size:12px;margin-top:12px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;display:flex;flex-direction:column-reverse;}
+.small{font-size:12px;color:#8a99ad;margin-top:4px;line-height:1.4;}
+.highlight { color: #ffd700; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="ui">
+<h3>Hex Strategy: Enchanted</h3>
+<div class="stat-row"><span>Level / XP:</span><span class="stat-val">Lvl <span id="lvl"></span> (<span id="xp"></span> XP)</span></div>
+<div class="stat-row"><span>Hero Health:</span><span class="stat-val" style="color:#ff6b6b;"><span id="hp"></span> / <span id="mhp"></span></span></div>
+<div class="stat-row"><span>Treasury Gold:</span><span class="stat-val" style="color:#ffd700;"><span id="gold"></span>g</span></div>
+<div class="stat-row"><span>Combat Attack:</span><span class="stat-val" style="color:#ff9f43;"><span id="atk"></span> Base</span></div>
+<div class="stat-row"><span>Army Battalion:</span><span class="stat-val" style="color:#1dd1a1;"><span id="army"></span> Troops</span></div>
+<div class="stat-row"><span>Inventory:</span><span class="stat-val" id="inv" style="font-size:12px; color:#a29bfe;"></span></div>
+<div style="margin-top:10px;" class="small"><span class="highlight">1</span> Fireball (15 DMG, Splash) • <span class="highlight">2</span> Heal (+12 HP) • <span class="highlight">3</span> Lightning (22 DMG)</div>
+<div class="small"><span class="highlight">Space</span> End Turn • Click adjacent tiles to move or strike.</div>
+<div id="log"></div>
+</div>
 
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.166.1/build/three.module.js";
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0a0f1d);
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const aspect=innerWidth/innerHeight;
+const camera=new THREE.OrthographicCamera(-45*aspect,45*aspect,45,-45,.1,1000);
+camera.position.set(0,80,45); // Angled down slightly for depth perception
+camera.lookAt(0,0,0);
+
+// Improved lighting array
+const ambient = new THREE.AmbientLight(0xffffff,1.2);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xfffAA0, 1.5);
+sun.position.set(30, 60, 20);
+scene.add(sun);
+
+const HEX=2, R=11;
+
+function hexToWorld(q, r) {
+ const x = HEX * Math.sqrt(3) * (q + r / 2);
+ const z = HEX * 1.5 * r;
+ return { x, z };
+}
+
+// Generate Pointy-topped hex shape
+const shape=new THREE.Shape();
+for(let i=0;i<6;i++){
+ const a = (Math.PI / 3) * i + (Math.PI / 6); 
+ const x = HEX * Math.cos(a);
+ const y = HEX * Math.sin(a);
+ if(i===0) shape.moveTo(x,y); else shape.lineTo(x,y);
+}
+shape.closePath();
+
+// Turn the flat hex into a 3D block with extruded depth
+const extrudeSettings = { depth: 0.8, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.05, bevelThickness: 0.05 };
+const geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+geo.rotateX(-Math.PI/2); 
+geo.translate(0, -0.8, 0); // Align tops to y=0
+
+const BIOMES = {
+  WATER:  { color: 0x1d3557, heightOffset: -0.4 },
+  BEACH:  { color: 0xe9c46a, heightOffset: 0.0 },
+  GRASS:  { color: 0x2a9d8f, heightOffset: 0.1 },
+  FOREST: { color: 0x1b4332, heightOffset: 0.2 },
+  MOUNTAIN:{ color: 0x4a4e69, heightOffset: 0.6 }
+};
+
+const tiles=[];
+for(let q=-R;q<=R;q++){
+ for(let r=-R;r<=R;r++){
+  if(Math.abs(-q-r)>R) continue;
+
+  const distFromCenter = (Math.abs(q) + Math.abs(r) + Math.abs(-q-r)) / 2;
+  const roll=Math.random();
+  
+  let biome = BIOMES.GRASS;
+  if (distFromCenter > R - 2 && roll < 0.6) biome = BIOMES.WATER;
+  else if (roll < 0.12) biome = BIOMES.MOUNTAIN;
+  else if (roll < 0.32) biome = BIOMES.FOREST;
+  else if (roll < 0.40) biome = BIOMES.BEACH;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: biome.color,
+    roughness: 0.8,
+    metalness: 0.1,
+    emissive: new THREE.Color(0x000000)
+  });
+
+  const tile = new THREE.Mesh(geo, mat);
+  const p = hexToWorld(q,r);
+  
+  // Apply heights based on biomes
+  tile.position.set(p.x, biome.heightOffset, p.z);
+  tile.userData = { q, r, biome };
+  scene.add(tile);
+  tiles.push(tile);
+ }
+}
+
+function createUnitMesh(color, size, height = 0.4) {
+  const group = new THREE.Group();
+  // Outer token ring
+  const ring = new THREE.Mesh(
+    new THREE.CylinderGeometry(size, size, height, 24),
+    new THREE.MeshStandardMaterial({ color: color, roughness: 0.4, metalness: 0.3 })
+  );
+  group.add(ring);
+  // Inner glowing core
+  const core = new THREE.Mesh(
+    new THREE.CylinderGeometry(size*0.7, size*0.7, height*1.2, 16),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: color, roughness: 0.2 })
+  );
+  core.position.y = 0.02;
+  group.add(core);
+  scene.add(group);
+  return group;
+}
+
+function place(mesh, q, r) {
+ const p = hexToWorld(q, r);
+ // Find tile height if available to map accurately onto terrain heights
+ const tile = tiles.find(t => t.userData.q === q && t.userData.r === r);
+ const y = tile ? tile.position.y + 0.2 : 0.2;
+ mesh.position.set(p.x, y, p.z);
+}
+
+const hero = createUnitMesh(0x38b6ff, 0.8, 0.5);
+
+const state={
+ q:0,r:0,
+ hp:40,maxHp:40,
+ gold:100,
+ atk:6,
+ xp:0,
+ level:1,
+ army:10,
+ inventory:["Health Potion", "Iron Sword"]
+};
+
+place(hero,0,0);
+
+function getHexDist(q1, r1, q2, r2) {
+ return (Math.abs(q1 - q2) + Math.abs(r1 - r2) + Math.abs((-q1 - r1) - (-q2 - r2))) / 2;
+}
+
+const logBox=document.getElementById("log");
+function log(msg) {
+ logBox.innerHTML = `<div>${msg}</div>` + logBox.innerHTML;
+}
+
+// Map bound interface caches
+const elLvl=document.getElementById("lvl"), elXp=document.getElementById("xp");
+const elHp=document.getElementById("hp"), elMhp=document.getElementById("mhp");
+const elGold=document.getElementById("gold"), elAtk=document.getElementById("atk");
+const elArmy=document.getElementById("army"), elInv=document.getElementById("inv");
+
+function updateUI(){
+ elLvl.textContent=state.level; elXp.textContent=state.xp;
+ elHp.textContent=state.hp; elMhp.textContent=state.maxHp;
+ elGold.textContent=state.gold; elAtk.textContent=state.atk;
+ elArmy.textContent=state.army; elInv.textContent=state.inventory.join(", ");
+}
+
+function gainXP(x){
+ state.xp+=x;
+ if(state.xp>=state.level*30){
+  state.level++; state.maxHp+=10; state.hp=state.maxHp; state.atk+=2; state.army+=2;
+  log(`<span style="color:#ffd700; font-weight:bold;">✨ Level Up! You reached Level ${state.level}!</span>`);
+ }
+}
+
+const towns=[];
+for(const pos of [[4,-2],[-5,3],[1,5]]){
+ const m = createUnitMesh(0x00f5d4, 0.9, 0.3);
+ place(m, pos[0], pos[1]);
+ towns.push({ q: pos[0], r: pos[1], mesh: m });
+}
+
+const enemies=[];
+function spawn(type, q, r){
+ const stats={
+   Goblin:[12, 3, 0x70e000],
+   Skeleton:[18, 5, 0xe0e1dd],
+   Orc:[26, 7, 0xd946ef],
+   Dragon:[60, 14, 0xff0054]
+ };
+ const s=stats[type];
+ const e={ type, q, r, hp: s[0], maxHp: s[0], atk: s[1], mesh: createUnitMesh(s[2], 0.7, 0.4) };
+ place(e.mesh, q, r);
+ enemies.push(e);
+}
+
+spawn("Goblin", 2, -1);
+spawn("Goblin", -3, 3);
+spawn("Skeleton", -4, 0);
+spawn("Orc", 4, 2);
+spawn("Dragon", 6, -3);
+
+const treasures=[];
+for(let i=0;i<10;i++){
+ const q=Math.floor(Math.random()*14)-7;
+ const r=Math.floor(Math.random()*14)-7;
+ if((q === 0 && r === 0) || tiles.find(t=>t.userData.q===q && t.userData.r===r)?.userData.biome === BIOMES.WATER) continue;
+ const m = createUnitMesh(0xffb703, 0.4, 0.2);
+ place(m, q, r);
+ treasures.push({ q, r, mesh: m, taken: false });
+}
+
+let spell=null;
+
+window.addEventListener("keydown", e=>{
+ if(e.key==="1"){spell="fireball"; log("<span style='color:#ff0054;'>Readying Fireball... (Click target)</span>");}
+ if(e.key==="2"){
+   state.hp=Math.min(state.maxHp, state.hp+12);
+   log("<span style='color:#00f5d4;'>Cast Heal Spell (+12 HP)</span>");
+   updateUI();
+ }
+ if(e.key==="3"){spell="lightning"; log("<span style='color:#38b6ff;'>Readying Lightning Strike... (Click target)</span>");}
+
+ if(e.code==="Space"){
+   log("<div style='color:#ff6b6b; font-weight:bold; margin-top:4px;'>— Enemy Phase —</div>");
+   enemies.forEach(enemy => {
+    if(enemy.hp <= 0) return;
+
+    if(getHexDist(state.q, state.r, enemy.q, enemy.r) <= 1){
+      state.hp -= enemy.atk;
+      log(`⚔️ ${enemy.type} attacks you for <span style="color:#ff6b6b;">${enemy.atk} DMG</span>!`);
+    } else {
+      const dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,-1],[-1,1]];
+      dirs.sort((a,b)=>{
+        return getHexDist(enemy.q+a[0], enemy.r+a[1], state.q, state.r) - getHexDist(enemy.q+b[0], enemy.r+b[1], state.q, state.r);
+      });
+      
+      let nq = enemy.q + dirs[0][0]; let nr = enemy.r + dirs[0][1];
+      
+      // Prevent overlapping player position or deep water bounds
+      const targetBiome = tiles.find(t=>t.userData.q===nq && t.userData.r===nr)?.userData.biome;
+      const spotOccupied = enemies.some(other => other.hp > 0 && other.q === nq && other.r === nr);
+      
+      if(!(nq === state.q && nr === state.r) && targetBiome !== BIOMES.WATER && !spotOccupied) {
+        enemy.q = nq; enemy.r = nr;
+        place(enemy.mesh, enemy.q, enemy.r);
+      }
+    }
+   });
+   if(state.hp <= 0) log("<span style='color:red; font-weight:bold;'>GAME OVER. Reload to restart!</span>");
+   updateUI();
+ }
+});
+
+const ray=new THREE.Raycaster();
+const mouse=new THREE.Vector2();
+
+window.addEventListener("pointerdown", e=>{
+ if(state.hp <= 0) return;
+
+ mouse.x=(e.clientX/innerWidth)*2-1;
+ mouse.y=-(e.clientY/innerHeight)*2+1;
+
+ ray.setFromCamera(mouse, camera);
+ const hit=ray.intersectObjects(tiles)[0];
+ if(!hit) return;
+
+ const q=hit.object.userData.q;
+ const r=hit.object.userData.r;
+ const distanceToTarget = getHexDist(state.q, state.r, q, r);
+
+ // 1. SPELL CASTING INTERACTION
+ if(spell){
+   let hitAny = false;
+   const range = spell === "fireball" ? 1 : 0;
+   
+   enemies.forEach(enemy => {
+    if(enemy.hp <= 0) return;
+    if(getHexDist(q, r, enemy.q, enemy.r) <= range){
+      const dmg = spell === "fireball" ? 15 : 22;
+      enemy.hp -= dmg; hitAny = true;
+      log(`💥 ${spell.toUpperCase()} blasted ${enemy.type} for ${dmg} magic damage! (${Math.max(0, enemy.hp)}/${enemy.maxHp} HP left)`);
+
+      if(enemy.hp <= 0){
+        enemy.mesh.visible = false; state.gold += 25; gainXP(20);
+        log(`☠️ Killed ${enemy.type}! Bounty collected.`);
+      }
+    }
+   });
+   if(!hitAny) log("The spell environment configuration targeted an empty zone.");
+   spell=null; updateUI(); return;
+ }
+
+ // 2. TACTICAL COMBAT ENGAGEMENT
+ let enemyOnHex = enemies.find(e => e.hp > 0 && e.q === q && e.r === r);
+ if(enemyOnHex) {
+   if(distanceToTarget > 1) {
+     log("❌ That target unit is outside physical sword range!"); return;
+   }
+   const damageDealt = state.atk + Math.floor(state.army/5);
+   enemyOnHex.hp -= damageDealt;
+   log(`⚔️ You strike ${enemyOnHex.type} for <span style="color:#ff9f43;">${damageDealt} DMG</span>! (${Math.max(0, enemyOnHex.hp)}/${enemyOnHex.maxHp} HP)`);
+   
+   if(enemyOnHex.hp <= 0){
+     enemyOnHex.mesh.visible = false; state.gold += 40; state.army += 1; gainXP(25);
+     log(`🎉 Defeated ${enemyOnHex.type}! Collected 40g.`);
+   }
+   updateUI(); return;
+ }
+
+ // 3. MOVEMENT CONTROLLER
+ if(distanceToTarget > 1) { log("❌ You can only march into adjacent zones!"); return; }
+ if(hit.object.userData.biome === BIOMES.WATER) { log("❌ Cannot move into deep ocean channels!"); return; }
+
+ state.q=q; state.r=r;
+ place(hero, q, r);
+
+ // Process Points of Interest
+ towns.forEach(town => {
+   if(town.q === q && town.r === r){
+      if(state.gold >= 20){
+         state.gold -= 20; state.army += 5; log("🏰 Recruited 5 auxiliary vanguard units (-20 Gold)");
+      } else { log("🏰 Insufficient gold reserves for recruitment."); }
+   }
+ });
+
+ treasures.forEach(t => {
+   if(!t.taken && t.q === q && t.r === r){
+      t.taken = true; t.mesh.visible = false; state.gold += 30;
+      if(Math.random() < 0.4) {
+         state.inventory.push("Ancient Relic");
+         log("💰 Looted hidden stash! Found 30 gold and a rare <span style='color:#a29bfe;'>Ancient Relic</span>!");
+      } else { log("💰 Found cache containing 30 gold!"); }
+   }
+ });
+
+ updateUI();
+});
+
+// Real-time hover preview highlight feedback loop
+let lastHoveredTile = null;
+window.addEventListener("pointermove", e => {
+ mouse.x = (e.clientX / innerWidth) * 2 - 1;
+ mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+ ray.setFromCamera(mouse, camera);
+ const hit = ray.intersectObjects(tiles)[0];
+ 
+ if(lastHoveredTile) { lastHoveredTile.material.emissive.setHex(0x000000); }
+ if(hit) {
+   const tQ = hit.object.userData.q; const tR = hit.object.userData.r;
+   const d = getHexDist(state.q, state.r, tQ, tR);
+   if(spell) {
+     hit.object.material.emissive.setHex(spell === "fireball" ? 0x3a000d : 0x0d203a);
+   } else if(d === 1 && hit.object.userData.biome !== BIOMES.WATER) {
+     hit.object.material.emissive.setHex(0x112518); // Green glow for valid step pathways
+   } else {
+     hit.object.material.emissive.setHex(0x111115);
+   }
+   lastHoveredTile = hit.object;
+ }
+});
+
+updateUI();
+
+// Animation loop
+renderer.setAnimationLoop(()=>{
+ const time = Date.now() * 0.004;
+ hero.position.y += Math.sin(time) * 0.015; // Hovering idle pathing
+ renderer.render(scene, camera);
+});
+
+// Window tracking constraints
+window.addEventListener('resize', () => {
+    const aspect = window.innerWidth / window.innerHeight;
+    camera.left = -45 * aspect; camera.right = 45 * aspect;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
